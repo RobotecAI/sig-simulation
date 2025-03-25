@@ -38,22 +38,46 @@ The following terminology that was created in [RFC-410](https://github.com/ros-i
 | Term      | Description                                                                      |
 | --------- | -------------------------------------------------------------------------------- |
 | Spawnable | Robot or other object that can be spawned in simulation runtime.                 |
-| Entity    | Spawned spawnable, it has a unique name.                                         |
+| Entity    | O3DE entity with sets of requrments specified in @                               |
 | Bounds    | A volume that is defined by an axis-aligned box shape, convex hull, or a sphere. |
 | NamedPose | SE3 (translation and rotation) transform with a unique name                      |
 | Tag       | A string that allows filtering entities and named poses                          |
 
 
 The implementation will be split into three (or more) system components:
-- `ROS 2 Entities manager`: responsible for the lifetime of spawned objects, it will cache initial positions.
-- `ROS 2 Named poses manager`: responsible for aggregating information in the Named Pose Game Component.
-- `ROS 2 Simulator manager`: responsible for modifying the global state of the simulation (e.g., pausing, reloading).
+- `Simulation Entities manager`: responsible for the lifetime of spawned objects, it will cache initial positions.
+- `Simulation Named poses manager`: responsible for aggregating information in the Named Pose Game Component.
+- `Simulation manager`: responsible for modifying the global state of the simulation (e.g., pausing, reloading).
 
 We will decouple the implementation of those features from their ROS 2 interfaces. Every manager will expose public methods that:
 - will be callable from C++,
 - will be handled through dedicated ROS 2 interface and exposed as service.
 
 The purpose of that approach is to enable testability without the need for a ROS framework and ensure the whole system can be used with any middleware in the future. 
+
+### Requirements for Simulation Entity
+
+In O3DE entity is fundamental block of building a spawnable or a prefab. It has different meaning to "entity" defined in [RFC-410](https://github.com/ros-infrastructure/rep/issues/410).
+
+| Aspect        | Simulated Entity            | O3DE entity  |
+|---------------|-----------------------------|--------------|
+| Naming        | Unique                      | Non-unique   |
+| Referencing   | By name                     | By Id        |
+| Customization | Tags, description, category | Components   |
+
+`Simulation Entities manager` will keep mapping between simulation entities and O3DE's entities.
+
+The O3DE entity will be picked by `Simulation Entities Manager` when following conditions are met:
+- Entity is "physical" by containing one or more components:
+   - [PhysX Static Rigid Body Component](https://www.docs.o3de.org/docs/user-guide/components/reference/physx/static-rigid-body/)
+   - [PhysX Dynamic Rigid Body Component](https://www.docs.o3de.org/docs/user-guide/components/reference/physx/rigid-body/)
+   - PhysX Articulation
+   - Or others (e.g., from other physics engine)
+- Has [ROS 2 Frame component ](https://www.docs.o3de.org/docs/user-guide/components/reference/ros2/core/ros2-frame/)
+
+Utilizing `AzPhysics::SceneInterface` abstraction we will be independent from PhysX 5 implementation. 
+What is more, number of useful tools (e.g., [Overlap Scene Query](https://docs.o3de.org/docs/user-guide/interactivity/physics/nvidia-physx/scene-queries/#overlap) are available).
+
 
 # ROS 2 API
 This section presents the detailed plan for implementation, including potential limitation.
@@ -129,7 +153,7 @@ Prepared response will be returned to the ROS 2 user.
 Service allows spawning entities previously found with `GetSpawnables` service. \
 Service definition: [SpawnEntity](https://github.com/adamdbrw/simulation_interfaces/blob/simulation_interfaces/srv/SpawnEntity.srv)
 
-The ROS 2 user who wants to spawn a new object in their simulation has to have a valid URI e.g.,`spawnable://@cache@/robot/foorobot.spawnable`. `ROS 2 Entities Manager` will find respective Asset ID based on the URI.
+The ROS 2 user who wants to spawn a new object in their simulation has to have a valid URI e.g.,`spawnable://@cache@/robot/foorobot.spawnable`. `Simulation Entities Manager` will find respective Asset ID based on the URI.
 
 Next, the [SpawnableEntitiesDefinition](https://github.com/o3de/o3de/blob/152bc0a1851d881fe735adf54ec93e1ad7875b11/Code/Framework/AzFramework/AzFramework/Spawnable/SpawnableEntitiesInterface.h#L334-L333) interface will be utilized to create a spawn ticket and spawn entity.
 
@@ -266,16 +290,16 @@ This service allows to get the list of the predefined poses which are convenient
 Service definition: [GetNamedPoses.srv](https://github.com/adamdbrw/simulation_interfaces/blob/simulation_interfaces/srv/GetNamedPoses.srv) \
 Individual named pose definition: [NamedPose.msg](https://github.com/adamdbrw/simulation_interfaces/blob/simulation_interfaces/msg/NamedPose.msg)
 
-This information will be obtained by calling a respective bus of `ROS 2 Named poses manager`. Additionally, the aggregation will be filtered based on the parameters of the call. The poses will be predefined by a simulation expert using O3DE Editor. In particular, each entity with `NamedPoseComponent` from ROS 2 Gem will be registered in the poses manager. The `NamedPoseComponent` will contain two configurable fields called `description` and `tags`. During creation of game component (`CreateGameEntity`) the `TagComponent` from `LmbrCentral` Gem will be created and fed with the list of tags. 
+This information will be obtained by calling a respective bus of `Simulation Named poses manager`. Additionally, the aggregation will be filtered based on the parameters of the call. The poses will be predefined by a simulation expert using O3DE Editor. In particular, each entity with `NamedPoseComponent` from ROS 2 Gem will be registered in the poses manager. The `NamedPoseComponent` will contain two configurable fields called `description` and `tags`. During creation of game component (`CreateGameEntity`) the `TagComponent` from `LmbrCentral` Gem will be created and fed with the list of tags. 
 
-**Note:** `ROS 2 Named poses manager` will ensure the names are unique (O3DE does not check for the name's uniqueness).
+**Note:** `Simulation Named poses manager` will ensure the names are unique (O3DE does not check for the name's uniqueness).
 
 ## GetNamedPoseBounds service
 
 This service allows to get the bounds defined in the predefined pose object. \
 Service definition [GetNamedPoseBounds.srv](https://github.com/adamdbrw/simulation_interfaces/blob/simulation_interfaces/srv/GetNamedPoseBounds.srv) 
 
-The information about the bounds will be obtained by calling a respective bus of `ROS 2 Named poses manager`. Additionally, the aggregation will be filtered based on the parameters of the call. The bounds of the pose will be predefined by a simulation expert using O3DE Editor by adding `TransformService` and dependent services `BoxShapeService` and `SphereShapeService` alongside with the `NamedPoseComponent`.
+The information about the bounds will be obtained by calling a respective bus of `Simulation Named poses manager`. Additionally, the aggregation will be filtered based on the parameters of the call. The bounds of the pose will be predefined by a simulation expert using O3DE Editor by adding `TransformService` and dependent services `BoxShapeService` and `SphereShapeService` alongside with the `NamedPoseComponent`.
 
 **Note:** Convex hull bounds shape will not be supported in this implementation. This subject will be cover by another RFC when necessary.
 
@@ -284,13 +308,13 @@ The information about the bounds will be obtained by calling a respective bus of
 This service allows to reset the simulation via ROS 2 interface. \
 Service definition: [ResetSimulation.srv](https://github.com/adamdbrw/simulation_interfaces/blob/simulation_interfaces/srv/ResetSimulation.srv)
 
-This service will be handled by `ROS 2 Simulator manager`. It will use multiple APIs to give results.
+This service will be handled by `Simulation manager`. It will use multiple APIs to give results.
 
 | Scope         | Planned API and usage                                                          |
 | ------------- | ------------------------------------------------------------------------------ |
 | SCOPE_ALL     | `ConsoleRequestBus` and `LoadLevel` command.                                   |
-| SCOPE_SPAWNED | Internal API to destroy all spawn tickets using `ROS 2 Entities manager`.      |
-| SCOPE_STATE   | Move all spawned entities to initial poses cached in `ROS 2 Entities manager`. |
+| SCOPE_SPAWNED | Internal API to destroy all spawn tickets using `Simulation Entities manager`.      |
+| SCOPE_STATE   | Move all spawned entities to initial poses cached in `Simulation Entities manager`. |
 | SCOPE_TIME    | New call using `ROS2Bus`                                                       |
 
 ## SetSimulationState service
@@ -298,7 +322,7 @@ This service will be handled by `ROS 2 Simulator manager`. It will use multiple 
 This service allows to set the state of the simulation (*STOPPED*, *PAUSED*, *PLAYING*, *QUITTING*). \
 Service definition: [SimulationState](https://github.com/adamdbrw/simulation_interfaces/blob/simulation_interfaces/msg/SimulationState.msg)
 
-This service will be handled by `ROS 2 Simulator manager`.
+This service will be handled by `Simulation manager`.
 
 The transition from *PLAYING* or *PAUSED* to *STOPPED* will trigger level reloading.
 
@@ -307,14 +331,14 @@ The transition from *PLAYING* to *PAUSED* will ask the default physics scene to 
 The transition from *PLAYING*, *PAUSED*, or *STOPPED* to *QUITTING* will close simulator calling `ConsoleRequestBus` with `quit` command.
 
 
-The ROS 2 Simulator manager will contain the state of the simulation and perform necessary transitions.
+The Simulation manager will contain the state of the simulation and perform necessary transitions.
 
 ## GetSimulationState service
 
 This service allows to get the current state of the simulation. \
 Service definition: [GetSimulationState.srv](https://github.com/adamdbrw/simulation_interfaces/blob/simulation_interfaces/srv/GetSimulationState.srv)
 
-This service will be handled by `ROS 2 Simulator manager`. If transition is in progress (e.g. reloading level or despawning), the old state will be returned.
+This service will be handled by `Simulation manager`. If transition is in progress (e.g. reloading level or despawning), the old state will be returned.
 
 # Deprecated components in ROS 2 Gem
 
